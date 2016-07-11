@@ -10,7 +10,7 @@ from dateutil import parser
 real_time = time.time
 real_date = datetime.date
 real_datetime = datetime.datetime
-_permute_milliseconds = False
+
 
 # Stolen from six
 def with_metaclass(meta, *bases):
@@ -18,23 +18,13 @@ def with_metaclass(meta, *bases):
     return meta("NewBase", bases, {})
 
 
-class FakeTimeBase(object):
-    time_to_freeze = None
+class FakeTime(object):
 
-    @classmethod
-    def get_time_to_freeze(cls):
-        if _permute_milliseconds:
-            cls.time_to_freeze += datetime.timedelta(microseconds=1)
-        return cls.time_to_freeze
+    def __init__(self, time_to_freeze):
+        self.time_to_freeze = time_to_freeze
 
-    @classmethod
-    def set_time_to_freeze(cls, t):
-        cls.time_to_freeze = t
-
-
-class FakeTime(FakeTimeBase):
     def __call__(self):
-        shifted_time = self.get_time_to_freeze() - datetime.timedelta(seconds=time.timezone)
+        shifted_time = self.time_to_freeze - datetime.timedelta(seconds=time.timezone)
         return time.mktime(shifted_time.timetuple()) + shifted_time.microsecond / 1000000.0
 
 
@@ -93,15 +83,12 @@ FakeDate.max = date_to_fakedate(real_date.max)
 
 class FakeDatetimeMeta(FakeDateMeta):
     @classmethod
-    def __instancecheck__(mcs, obj):
+    def __instancecheck__(self, obj):
         return isinstance(obj, real_datetime)
 
-    @classmethod
-    def __eq__(mcs, other):
-        return (other is real_datetime) or (other is FakeDatetime)
 
-
-class FakeDatetime(with_metaclass(FakeDatetimeMeta, real_datetime, FakeDate, FakeTimeBase)):
+class FakeDatetime(with_metaclass(FakeDatetimeMeta, real_datetime, FakeDate)):
+    time_to_freeze = None
     tz_offset = None
 
     def __new__(cls, *args, **kwargs):
@@ -125,9 +112,9 @@ class FakeDatetime(with_metaclass(FakeDatetimeMeta, real_datetime, FakeDate, Fak
     @classmethod
     def now(cls, tz=None):
         if tz:
-            result = tz.fromutc(cls.get_time_to_freeze().replace(tzinfo=tz)) + datetime.timedelta(hours=cls.tz_offset)
+            result = tz.fromutc(cls.time_to_freeze.replace(tzinfo=tz)) + datetime.timedelta(hours=cls.tz_offset)
         else:
-            result = cls.get_time_to_freeze() + datetime.timedelta(hours=cls.tz_offset)
+            result = cls.time_to_freeze + datetime.timedelta(hours=cls.tz_offset)
         return datetime_to_fakedatetime(result)
 
     @classmethod
@@ -136,7 +123,7 @@ class FakeDatetime(with_metaclass(FakeDatetimeMeta, real_datetime, FakeDate, Fak
 
     @classmethod
     def utcnow(cls):
-        result = cls.get_time_to_freeze()
+        result = cls.time_to_freeze
         return datetime_to_fakedatetime(result)
 
 FakeDatetime.min = datetime_to_fakedatetime(real_datetime.min)
@@ -185,8 +172,7 @@ class _freeze_time(object):
     def start(self):
         datetime.datetime = FakeDatetime
         datetime.date = FakeDate
-        fake_time = FakeTime()
-        fake_time.set_time_to_freeze(self.time_to_freeze)
+        fake_time = FakeTime(self.time_to_freeze)
         time.time = fake_time
 
         for mod_name, module in list(sys.modules.items()):
@@ -204,7 +190,6 @@ class _freeze_time(object):
                     module.time = fake_time
 
         datetime.datetime.time_to_freeze = self.time_to_freeze
-        datetime.datetime.set_time_to_freeze(self.time_to_freeze)
         datetime.datetime.tz_offset = self.tz_offset
 
         # Since datetime.datetime has already been mocked, just use that for
@@ -237,13 +222,12 @@ class _freeze_time(object):
         return wrapper
 
 
-def freeze_time(time_to_freeze, tz_offset=0, permute_milliseconds=False):
+def freeze_time(time_to_freeze, tz_offset=0):
     if isinstance(time_to_freeze, datetime.datetime):
         time_to_freeze = time_to_freeze.isoformat()
     elif isinstance(time_to_freeze, datetime.date):
         time_to_freeze = time_to_freeze.isoformat()
-    global _permute_milliseconds
-    _permute_milliseconds = permute_milliseconds
+
     # Python3 doesn't have basestring, but it does have str.
     try:
         string_type = basestring
@@ -274,13 +258,3 @@ else:
 
     sqlite3.register_adapter(FakeDate, adapt_date)
     sqlite3.register_adapter(FakeDatetime, adapt_datetime)
-
-
-# Setup converters for pymysql
-try:
-    import pymysql.converters
-except ImportError:
-    pass
-else:
-    pymysql.converters.encoders[FakeDate] = pymysql.converters.encoders[real_date]
-    pymysql.converters.encoders[FakeDatetime] = pymysql.converters.encoders[real_datetime]
